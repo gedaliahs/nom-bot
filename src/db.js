@@ -1,5 +1,8 @@
 // src/db.js (JSON store)
 import { JSONFile, Low } from 'lowdb';
+import { Low } from 'lowdb';
+import { JSONFile } from 'lowdb/node';
+
 import path from 'node:path';
 import fs from 'node:fs';
 
