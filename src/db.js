@@ -1,11 +1,9 @@
-// src/db.js
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Low } from "lowdb";
 import { JSONFile } from "lowdb/node";
 
-// Resolve a stable data directory (Render-safe if you mount a Disk at ./data)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "..", "data");
@@ -14,22 +12,24 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const dbPath = path.join(DATA_DIR, "nom.json");
 const adapter = new JSONFile(dbPath);
 export const db = new Low(adapter, {
+  // existing
   settings: {},   // guildId -> { announce_channel_id }
   stats: {},      // guildId -> { userId -> { total_nom, daily_nom, last_day } }
   counters: {},   // guildId -> { total_nom, next_drop_at, marathon_active, marathon_count }
-  wins: {}        // guildId -> { userId -> wins }
+  wins: {},       // guildId -> { userId -> wins }
+  // new
+  roles: {},      // guildId -> { key: roleId }
+  wallets: {},    // guildId -> { userId: coins }
+  shop: {}        // guildId -> [ { id, name, price, type, payload } ]
 });
 await db.read();
 await db.write();
 
-// internal helper
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
+const todayStr = () => new Date().toISOString().slice(0, 10);
 function ensureCounter(gid) {
   db.data.counters[gid] ||= {
     total_nom: 0,
-    next_drop_at: 35,      // first drop between 30–40; we’ll randomize after first trigger
+    next_drop_at: 35,
     marathon_active: 0,
     marathon_count: 0
   };
@@ -38,9 +38,7 @@ function ensureCounter(gid) {
 async function save() { await db.write(); }
 
 // ----- Settings -----
-export function getSetting(gid) {
-  return db.data.settings[gid] || null;
-}
+export function getSetting(gid) { return db.data.settings[gid] || null; }
 export async function upsertSetting(gid, channelId) {
   db.data.settings[gid] = { guild_id: gid, announce_channel_id: channelId };
   await save();
@@ -56,10 +54,9 @@ export function bumpUserNom(gid, uid) {
   row.total_nom += 1;
   row.daily_nom += 1;
   db.data.stats[gid][uid] = row;
-  save(); // fire-and-forget
+  save();
   return { total: row.total_nom, daily: row.daily_nom };
 }
-
 export function topToday(gid) {
   const t = todayStr();
   const m = db.data.stats[gid] || {};
@@ -69,7 +66,6 @@ export function topToday(gid) {
     .sort((a, b) => b.daily_nom - a.daily_nom)
     .slice(0, 10);
 }
-
 export function topAll(gid) {
   const m = db.data.stats[gid] || {};
   return Object.entries(m)
@@ -78,11 +74,8 @@ export function topAll(gid) {
     .slice(0, 10);
 }
 
-// ----- Counters (guild total, drops, marathon) -----
-export function getCounter(gid) {
-  return ensureCounter(gid);
-}
-
+// ----- Counters -----
+export function getCounter(gid) { return ensureCounter(gid); }
 export function incrTotalNom(gid) {
   const c = ensureCounter(gid);
   c.total_nom += 1;
@@ -90,8 +83,6 @@ export function incrTotalNom(gid) {
   save();
   return c.total_nom;
 }
-
-// set next mini-drop threshold to random between [min, max]
 export function setNextDrop(gid, min = 30, max = 40) {
   const c = ensureCounter(gid);
   const n = Math.floor(Math.random() * (max - min + 1)) + min;
@@ -99,7 +90,6 @@ export function setNextDrop(gid, min = 30, max = 40) {
   save();
   return n;
 }
-
 export function resetMarathon(gid, active) {
   const c = ensureCounter(gid);
   c.marathon_active = active ? 1 : 0;
@@ -107,18 +97,63 @@ export function resetMarathon(gid, active) {
   save();
 }
 
-// ----- Mini-game wins -----
+// ----- Wins -----
 export function addWin(gid, uid) {
   db.data.wins[gid] ||= {};
   db.data.wins[gid][uid] = (db.data.wins[gid][uid] || 0) + 1;
   save();
   return db.data.wins[gid][uid];
 }
-
 export function topWinners(gid) {
   const m = db.data.wins[gid] || {};
   return Object.entries(m)
     .map(([user_id, wins]) => ({ user_id, wins }))
     .sort((a, b) => b.wins - a.wins)
     .slice(0, 10);
+}
+
+// ----- Roles -----
+export async function setRole(gid, key, roleId) {
+  db.data.roles[gid] ||= {};
+  db.data.roles[gid][key] = roleId;
+  await save();
+}
+export function getRole(gid, key) {
+  return db.data.roles[gid]?.[key] || null;
+}
+
+// ----- Wallets -----
+export function addCoins(gid, uid, amt) {
+  db.data.wallets[gid] ||= {};
+  db.data.wallets[gid][uid] = (db.data.wallets[gid][uid] || 0) + amt;
+  save();
+}
+export function getBalance(gid, uid) {
+  return db.data.wallets[gid]?.[uid] || 0;
+}
+export function spendCoins(gid, uid, amt) {
+  const cur = getBalance(gid, uid);
+  if (cur < amt) return false;
+  db.data.wallets[gid][uid] = cur - amt;
+  save();
+  return true;
+}
+
+// ----- Shop -----
+import crypto from "node:crypto";
+const makeId = () => crypto.randomUUID?.() || String(Date.now() + Math.random());
+
+export function listShop(gid) { return db.data.shop[gid] || []; }
+export async function addShopItem(gid, item) {
+  db.data.shop[gid] ||= [];
+  db.data.shop[gid].push({ id: makeId(), ...item });
+  await save();
+}
+export async function removeShopItem(gid, itemId) {
+  db.data.shop[gid] ||= [];
+  db.data.shop[gid] = db.data.shop[gid].filter(i => i.id !== itemId);
+  await save();
+}
+export function getShopItem(gid, itemId) {
+  return (db.data.shop[gid] || []).find(i => i.id === itemId) || null;
 }

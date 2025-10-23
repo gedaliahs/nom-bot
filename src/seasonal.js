@@ -1,4 +1,3 @@
-// src/seasonal.js
 export function seasonalTag() {
     const month = new Date().getMonth() + 1; // 1–12
     const seasons = {
@@ -15,7 +14,6 @@ export function seasonalTag() {
       11: "🕎 Festival of Noms",
       12: "🎁 Holiday Noms"
     };
-  
     return seasons[month] || "Nom Season";
   }
   
