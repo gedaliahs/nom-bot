@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits, Partials, Events } from 'discord.js';
 import { getRandomResponse, initResponses } from './responses.js';
+import { maybeRunRareEvent } from "./rareEvents.js";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -37,6 +38,8 @@ client.on(Events.MessageCreate, async (message) => {
       // Prefer replying to keep threads tidy; fallback to channel send if not allowed
       if (message.channel?.type && message.reply) {
         await message.reply({ content: replyText, allowedMentions: { repliedUser: false } });
+        await maybeRunRareEvent(client, message);
+
       } else {
         await message.channel.send({ content: replyText });
       }
