@@ -1,0 +1,19 @@
+{
+    "name": "nom-bot",
+    "version": "1.0.0",
+    "description": "Replies to any message containing 'nom' with a random response from 1000 unique options.",
+    "main": "src/index.js",
+    "type": "module",
+    "engines": {
+      "node": ">=20.0.0"
+    },
+    "scripts": {
+      "start": "node src/index.js",
+      "dev": "node --watch src/index.js",
+      "healthcheck": "node -e \"console.log('ok')\""
+    },
+    "dependencies": {
+      "discord.js": "^14.15.3"
+    }
+  }
+

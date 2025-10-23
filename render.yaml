@@ -1,0 +1,12 @@
+services:
+  - type: worker
+    name: nom-bot
+    env: node
+    plan: free
+    region: oregon
+    buildCommand: "npm ci"
+    startCommand: "node src/index.js"
+    autoDeploy: true
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
