@@ -1,131 +1,79 @@
-import Database from "better-sqlite3";
-import fs from "node:fs";
-import path from "node:path";
+// src/db.js (JSON store)
+import { JSONFile, Low } from 'lowdb';
+import path from 'node:path';
+import fs from 'node:fs';
 
 const DATA_DIR = process.env.DATA_DIR || "./data";
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-const dbPath = path.join(DATA_DIR, "nom.sqlite3");
 
-export const db = new Database(dbPath);
-db.pragma("journal_mode = WAL");
+const dbPath = path.join(DATA_DIR, "nom.json");
+const adapter = new JSONFile(dbPath);
+export const db = new Low(adapter, {
+  settings: {}, stats: {}, counters: {}, wins: {}
+});
+await db.read();
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS settings (
-  guild_id TEXT PRIMARY KEY,
-  announce_channel_id TEXT
-);
+function save() { return db.write(); }
 
-CREATE TABLE IF NOT EXISTS stats (
-  guild_id TEXT,
-  user_id TEXT,
-  total_nom INTEGER DEFAULT 0,
-  daily_nom INTEGER DEFAULT 0,
-  last_day TEXT,
-  PRIMARY KEY (guild_id, user_id)
-);
+// settings
+export function getSetting(gid){ return db.data.settings[gid] || null; }
+export function upsertSetting(gid, channelId){
+  db.data.settings[gid] = { guild_id: gid, announce_channel_id: channelId };
+  return save();
+}
 
-CREATE TABLE IF NOT EXISTS counters (
-  guild_id TEXT PRIMARY KEY,
-  total_nom INTEGER DEFAULT 0,
-  next_drop_at INTEGER DEFAULT 35,
-  marathon_active INTEGER DEFAULT 0,
-  marathon_count INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS wins (
-  guild_id TEXT,
-  user_id TEXT,
-  wins INTEGER DEFAULT 0,
-  PRIMARY KEY (guild_id, user_id)
-);
-`);
-
-export const getSetting = db.prepare("SELECT * FROM settings WHERE guild_id=?");
-export const upsertSetting = db.prepare(`
-INSERT INTO settings (guild_id, announce_channel_id) VALUES (?,?)
-ON CONFLICT(guild_id) DO UPDATE SET announce_channel_id=excluded.announce_channel_id
-`);
-
-const selStats = db.prepare("SELECT * FROM stats WHERE guild_id=? AND user_id=?");
-const insStats = db.prepare(`
-INSERT INTO stats (guild_id, user_id, total_nom, daily_nom, last_day)
-VALUES (?,?,?,?,?)
-`);
-const updStats = db.prepare(`
-UPDATE stats SET total_nom=total_nom+1, daily_nom=daily_nom+1, last_day=? WHERE guild_id=? AND user_id=?
-`);
-const updStatsNewDay = db.prepare(`
-UPDATE stats SET total_nom=total_nom+1, daily_nom=1, last_day=? WHERE guild_id=? AND user_id=?
-`);
-
-export function bumpUserNom(guildId, userId) {
+// stats
+export function bumpUserNom(gid, uid){
   const today = new Date().toISOString().slice(0,10);
-  const row = selStats.get(guildId, userId);
-  if (!row) {
-    insStats.run(guildId, userId, 1, 1, today);
-    return { total: 1, daily: 1 };
-  }
-  if (row.last_day !== today) {
-    updStatsNewDay.run(today, guildId, userId);
-    return { total: row.total_nom + 1, daily: 1 };
-  } else {
-    updStats.run(today, guildId, userId);
-    return { total: row.total_nom + 1, daily: row.daily_nom + 1 };
-  }
+  db.data.stats[gid] ||= {};
+  const row = db.data.stats[gid][uid] || { total_nom:0, daily_nom:0, last_day: today };
+  if (row.last_day !== today) { row.daily_nom = 0; row.last_day = today; }
+  row.total_nom++; row.daily_nom++;
+  db.data.stats[gid][uid] = row; save();
+  return { total: row.total_nom, daily: row.daily_nom };
 }
 
-export const topToday = db.prepare(`
-SELECT user_id, daily_nom FROM stats
-WHERE guild_id=? AND last_day=?
-ORDER BY daily_nom DESC
-LIMIT 10
-`);
-
-export const topAll = db.prepare(`
-SELECT user_id, total_nom FROM stats
-WHERE guild_id=?
-ORDER BY total_nom DESC
-LIMIT 10
-`);
-
-export const getCounter = db.prepare("SELECT * FROM counters WHERE guild_id=?");
-export const upsertCounter = db.prepare(`
-INSERT INTO counters (guild_id, total_nom, next_drop_at, marathon_active, marathon_count)
-VALUES (?,?,?,?,?)
-ON CONFLICT(guild_id) DO UPDATE SET
-  total_nom=excluded.total_nom,
-  next_drop_at=excluded.next_drop_at,
-  marathon_active=excluded.marathon_active,
-  marathon_count=excluded.marathon_count
-`);
-
-export function incrTotalNom(guildId) {
-  const row = getCounter.get(guildId);
-  const current = row?.total_nom ?? 0;
-  const nextDrop = row?.next_drop_at ?? 35;
-  const marathonActive = row?.marathon_active ?? 0;
-  const marathonCount = row?.marathon_count ?? 0;
-  upsertCounter.run(guildId, current + 1, nextDrop, marathonActive, marathonCount + (marathonActive ? 1 : 0));
-  return current + 1;
+export function topTodayAll(gid){
+  const today = new Date().toISOString().slice(0,10);
+  const m = db.data.stats[gid] || {};
+  return Object.entries(m)
+    .filter(([,r]) => r.last_day === today)
+    .map(([user_id, r]) => ({ user_id, daily_nom: r.daily_nom }))
+    .sort((a,b)=>b.daily_nom-a.daily_nom).slice(0,10);
+}
+export function topAllAll(gid){
+  const m = db.data.stats[gid] || {};
+  return Object.entries(m)
+    .map(([user_id, r]) => ({ user_id, total_nom: r.total_nom }))
+    .sort((a,b)=>b.total_nom-a.total_nom).slice(0,10);
 }
 
-export function setNextDrop(guildId, min=30, max=40) {
-  const next = Math.floor(Math.random() * (max - min + 1)) + min;
-  const row = getCounter.get(guildId) || {};
-  upsertCounter.run(guildId, row.total_nom ?? 0, next, row.marathon_active ?? 0, row.marathon_count ?? 0);
-  return next;
+// counters
+export function getCounter(gid){ return db.data.counters[gid] || null; }
+export function upsertCounter(gid, obj){
+  db.data.counters[gid] = { ...(db.data.counters[gid]||{}), ...obj };
+  return save();
 }
-
-export function resetMarathon(guildId, active) {
-  const row = getCounter.get(guildId) || {};
-  upsertCounter.run(guildId, row.total_nom ?? 0, row.next_drop_at ?? 35, active ? 1 : 0, 0);
+export function incrTotalNom(gid){
+  const row = getCounter(gid) || { total_nom:0, next_drop_at:35, marathon_active:0, marathon_count:0 };
+  row.total_nom++; if (row.marathon_active) row.marathon_count++;
+  upsertCounter(gid, row); return row.total_nom;
 }
-
-export const addWin = db.prepare(`
-INSERT INTO wins (guild_id, user_id, wins) VALUES (?,?,1)
-ON CONFLICT(guild_id, user_id) DO UPDATE SET wins = wins + 1
-`);
-
-export const topWinners = db.prepare(`
-SELECT user_id, wins FROM wins WHERE guild_id=? ORDER BY wins DESC LIMIT 10
-`);
+export function setNextDrop(gid, min=30, max=40){
+  const next = Math.floor(Math.random()*(max-min+1))+min;
+  const row = getCounter(gid) || {};
+  upsertCounter(gid, { ...row, next_drop_at: next }); return next;
+}
+export function resetMarathon(gid, active){
+  const row = getCounter(gid) || { total_nom:0, next_drop_at:35, marathon_count:0 };
+  upsertCounter(gid, { ...row, marathon_active: active?1:0, marathon_count:0 });
+}
+export function addWinRun(gid, uid){
+  db.data.wins[gid] ||= {};
+  db.data.wins[gid][uid] = (db.data.wins[gid][uid]||0)+1; return save();
+}
+export function topWinnersAll(gid){
+  const m = db.data.wins[gid] || {};
+  return Object.entries(m).map(([user_id,wins])=>({user_id, wins}))
+    .sort((a,b)=>b.wins-a.wins).slice(0,10);
+}
