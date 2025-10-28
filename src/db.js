@@ -16,11 +16,7 @@ export const db = new Low(adapter, {
   settings: {},   // guildId -> { announce_channel_id }
   stats: {},      // guildId -> { userId -> { total_nom, daily_nom, last_day } }
   counters: {},   // guildId -> { total_nom, next_drop_at, marathon_active, marathon_count }
-  wins: {},       // guildId -> { userId -> wins }
-  // new
-  roles: {},      // guildId -> { key: roleId }
-  wallets: {},    // guildId -> { userId: coins }
-  shop: {}        // guildId -> [ { id, name, price, type, payload } ]
+  wins: {}        // guildId -> { userId -> wins }
 });
 await db.read();
 await db.write();
@@ -112,48 +108,3 @@ export function topWinners(gid) {
     .slice(0, 10);
 }
 
-// ----- Roles -----
-export async function setRole(gid, key, roleId) {
-  db.data.roles[gid] ||= {};
-  db.data.roles[gid][key] = roleId;
-  await save();
-}
-export function getRole(gid, key) {
-  return db.data.roles[gid]?.[key] || null;
-}
-
-// ----- Wallets -----
-export function addCoins(gid, uid, amt) {
-  db.data.wallets[gid] ||= {};
-  db.data.wallets[gid][uid] = (db.data.wallets[gid][uid] || 0) + amt;
-  save();
-}
-export function getBalance(gid, uid) {
-  return db.data.wallets[gid]?.[uid] || 0;
-}
-export function spendCoins(gid, uid, amt) {
-  const cur = getBalance(gid, uid);
-  if (cur < amt) return false;
-  db.data.wallets[gid][uid] = cur - amt;
-  save();
-  return true;
-}
-
-// ----- Shop -----
-import crypto from "node:crypto";
-const makeId = () => crypto.randomUUID?.() || String(Date.now() + Math.random());
-
-export function listShop(gid) { return db.data.shop[gid] || []; }
-export async function addShopItem(gid, item) {
-  db.data.shop[gid] ||= [];
-  db.data.shop[gid].push({ id: makeId(), ...item });
-  await save();
-}
-export async function removeShopItem(gid, itemId) {
-  db.data.shop[gid] ||= [];
-  db.data.shop[gid] = db.data.shop[gid].filter(i => i.id !== itemId);
-  await save();
-}
-export function getShopItem(gid, itemId) {
-  return (db.data.shop[gid] || []).find(i => i.id === itemId) || null;
-}

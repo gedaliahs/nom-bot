@@ -7,10 +7,7 @@ import {
     REST,
     Routes,
     EmbedBuilder,
-    PermissionFlagsBits,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle
+    PermissionFlagsBits
   } from "discord.js";
   
   import { getRandomResponse, initResponses } from "./responses.js";
@@ -25,16 +22,7 @@ import {
     topAll,
     resetMarathon,
     addWin,
-    topWinners,
-    addCoins,
-    getBalance,
-    spendCoins,
-    setRole,
-    getRole,
-    listShop,
-    addShopItem,
-    removeShopItem,
-    getShopItem
+    topWinners
   } from "./db.js";
   import { nomTranslate } from "./translator.js";
   import { seasonalTag } from "./seasonal.js";
@@ -89,50 +77,6 @@ import {
     new SlashCommandBuilder().setName("fortune").setDescription("Receive a nom fortune."),
     new SlashCommandBuilder().setName("lore").setDescription("Generate Nom lore."),
   
-    // Economy + roles + shop
-    new SlashCommandBuilder()
-      .setName("balance")
-      .setDescription("Show your coin balance"),
-    new SlashCommandBuilder()
-      .setName("setrole")
-      .setDescription("Map a special role key to a role (admin).")
-      .addStringOption(o => o.setName("key").setDescription("e.g., golden_nom").setRequired(true))
-      .addRoleOption(o => o.setName("role").setDescription("Target role").setRequired(true))
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-    new SlashCommandBuilder()
-      .setName("shop")
-      .setDescription("Shop actions")
-      .addSubcommand(sc => sc.setName("list").setDescription("List items (embedded with buttons)"))
-      .addSubcommand(sc =>
-        sc.setName("add")
-          .setDescription("Add item (admin)")
-          .addStringOption(o => o.setName("name").setDescription("Item name").setRequired(true))
-          .addIntegerOption(o => o.setName("price").setDescription("Price").setRequired(true))
-          .addStringOption(o =>
-            o
-              .setName("type")
-              .setDescription("role | consumable")
-              .setRequired(true)
-              .addChoices({ name: "role", value: "role" }, { name: "consumable", value: "consumable" })
-          )
-          .addStringOption(o =>
-            o
-              .setName("payload")
-              .setDescription("roleId for type=role, else free-form")
-              .setRequired(true)
-          )
-      )
-      .addSubcommand(sc =>
-        sc
-          .setName("remove")
-          .setDescription("Remove item (admin)")
-          .addStringOption(o => o.setName("id").setDescription("Item id").setRequired(true))
-      )
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-    new SlashCommandBuilder()
-      .setName("buy")
-      .setDescription("Buy a shop item by id (fallback if buttons fail)")
-      .addStringOption(o => o.setName("id").setDescription("Item id").setRequired(true))
   ].map(c => c.toJSON());
   
   // ------------- Register commands -------------
@@ -201,8 +145,6 @@ import {
     bumpUserNom(m.guild.id, m.author.id);
     const total = incrTotalNom(m.guild.id);
   
-    // coins
-    addCoins(m.guild.id, m.author.id, 1);
   
     // party trigger
     const arr = recentByChannel.get(m.channel.id) || [];
@@ -276,10 +218,9 @@ import {
     if (t.type === "code" && m.channel.id === t.channelId && m.content.trim() === t.answer) {
       activeTasks.delete(m.guild.id);
       addWin(m.guild.id, m.author.id);
-      addCoins(m.guild.id, m.author.id, 10);
       const e = new EmbedBuilder()
         .setColor(0x22c55e)
-        .setDescription(`🏅 **Winner:** <@${m.author.id}> (+10 coins)`);
+        .setDescription(`🏅 **Winner:** <@${m.author.id}>`);
       await m.channel.send({ embeds: [e] });
     }
   });
@@ -293,124 +234,16 @@ import {
     if (t.type === "react" && r.message.id === t.messageId && r.emoji.name === t.emoji) {
       activeTasks.delete(r.message.guildId);
       addWin(r.message.guildId, u.id);
-      addCoins(r.message.guildId, u.id, 10);
       const e = new EmbedBuilder()
         .setColor(0x22c55e)
-        .setDescription(`🏅 **Winner:** <@${u.id}> (+10 coins)`);
+        .setDescription(`🏅 **Winner:** <@${u.id}>`);
       await r.message.channel.send({ embeds: [e] });
     }
   });
   
-  // --------------- SHOP RENDERING (embeds + buttons) ---------------
-  const ITEMS_PER_PAGE = 10;
-  function renderShopPage(guildId, page = 0) {
-    const items = listShop(guildId);
-    const totalPages = Math.max(1, Math.ceil(items.length / ITEMS_PER_PAGE));
-    const clamped = Math.min(Math.max(0, page), totalPages - 1);
-    const start = clamped * ITEMS_PER_PAGE;
-    const pageItems = items.slice(start, start + ITEMS_PER_PAGE);
-  
-    const e = new EmbedBuilder()
-      .setTitle("🏪 Nom Shop")
-      .setDescription("Earn coins by nomming and winning mini-games. Click a button to buy.")
-      .setColor(0x8b5cf6)
-      .setFooter({ text: `Page ${clamped + 1}/${totalPages} • ${seasonalTag()}` });
-  
-    if (pageItems.length === 0) {
-      e.addFields({ name: "No items yet", value: "Admins can add items with `/shop add`." });
-    } else {
-      for (const it of pageItems) {
-        e.addFields({
-          name: `${it.name} — ${it.price}c`,
-          value: `Type: \`${it.type}\` • ID: \`${it.id}\``
-        });
-      }
-    }
-  
-    // Up to 10 buy buttons → two rows of 5
-    const rows = [];
-    let cur = new ActionRowBuilder();
-    for (let idx = 0; idx < pageItems.length; idx++) {
-      if (idx > 0 && idx % 5 === 0) {
-        rows.push(cur);
-        cur = new ActionRowBuilder();
-      }
-      const it = pageItems[idx];
-      const btn = new ButtonBuilder()
-        .setCustomId(`buy:${it.id}`)
-        .setLabel(`Buy: ${trimLabel(it.name, 17)}`)
-        .setStyle(ButtonStyle.Success);
-      cur.addComponents(btn);
-    }
-    if (pageItems.length) rows.push(cur);
-  
-    // Nav row
-    const nav = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`shopnav:${clamped - 1}`)
-        .setStyle(ButtonStyle.Secondary)
-        .setLabel("⟵ Prev")
-        .setDisabled(clamped <= 0),
-      new ButtonBuilder()
-        .setCustomId("noop:sep")
-        .setStyle(ButtonStyle.Secondary)
-        .setLabel("·")
-        .setDisabled(true),
-      new ButtonBuilder()
-        .setCustomId(`shopnav:${clamped + 1}`)
-        .setStyle(ButtonStyle.Secondary)
-        .setLabel("Next ⟶")
-        .setDisabled(clamped >= totalPages - 1)
-    );
-  
-    rows.push(nav);
-    return { embed: e, components: rows };
-  }
-  
-  function trimLabel(s, n) {
-    return s.length > n ? s.slice(0, n - 1) + "…" : s;
-  }
   
   // ---------------- Slash Handlers ----------------
   client.on(Events.InteractionCreate, async (i) => {
-    // BUTTONS: buy + nav
-    if (i.isButton()) {
-      // Pagination
-      if (i.customId.startsWith("shopnav:")) {
-        const target = parseInt(i.customId.split(":")[1], 10) || 0;
-        const { embed, components } = renderShopPage(i.guildId, target);
-        return i.update({ embeds: [embed], components });
-      }
-      // Ignore separator
-      if (i.customId.startsWith("noop:")) {
-        return i.deferUpdate().catch(() => {});
-      }
-      // Buy flow
-      if (i.customId.startsWith("buy:")) {
-        const itemId = i.customId.split(":")[1];
-        const it = getShopItem(i.guildId, itemId);
-        if (!it) return i.reply({ content: "Item not found.", ephemeral: true });
-  
-        if (!spendCoins(i.guildId, i.user.id, it.price)) {
-          const bal = getBalance(i.guildId, i.user.id);
-          return i.reply({ content: `Not enough coins. You have ${bal}.`, ephemeral: true });
-        }
-  
-        if (it.type === "role") {
-          const roleId = it.payload;
-          const role = await i.guild.roles.fetch(roleId).catch(() => null);
-          const member = await i.guild.members.fetch(i.user.id);
-          if (!role) {
-            return i.reply({ content: "Role not found. Tell an admin to fix the shop item.", ephemeral: true });
-          }
-          await member.roles.add(role).catch(() => {});
-          return i.reply({ content: `✅ Purchased **${it.name}** — role granted.`, ephemeral: true });
-        } else {
-          return i.reply({ content: `✅ Purchased **${it.name}** — enjoy!`, ephemeral: true });
-        }
-      }
-      return;
-    }
   
     // SLASH COMMANDS
     if (!i.isChatInputCommand()) return;
@@ -486,64 +319,6 @@ import {
       return i.reply({ embeds: [e] });
     }
   
-    if (n === "balance") {
-      const bal = getBalance(i.guildId, i.user.id);
-      const e = new EmbedBuilder()
-        .setColor(0xf97316)
-        .setTitle("💰 Your Balance")
-        .setDescription(`**${bal}** coins`);
-      return i.reply({ embeds: [e], ephemeral: true });
-    }
-  
-    if (n === "setrole") {
-      const key = i.options.getString("key", true); // e.g., golden_nom
-      const role = i.options.getRole("role", true);
-      await setRole(i.guildId, key, role.id);
-      return i.reply({ content: `✅ Set **${key}** → ${role}`, ephemeral: true });
-    }
-  
-    if (n === "shop") {
-      const sub = i.options.getSubcommand(true);
-      if (sub === "list") {
-        const { embed, components } = renderShopPage(i.guildId, 0);
-        return i.reply({ embeds: [embed], components });
-      }
-      if (sub === "add") {
-        const name = i.options.getString("name", true);
-        const price = i.options.getInteger("price", true);
-        const type = i.options.getString("type", true); // role | consumable
-        const payload = i.options.getString("payload", true);
-        await addShopItem(i.guildId, { name, price, type, payload });
-        return i.reply({ content: `✅ Added **${name}** for ${price}c (${type})`, ephemeral: true });
-      }
-      if (sub === "remove") {
-        const id = i.options.getString("id", true);
-        await removeShopItem(i.guildId, id);
-        return i.reply({ content: `🗑️ Removed item ${id}`, ephemeral: true });
-      }
-    }
-  
-    // Fallback buy by id
-    if (n === "buy") {
-      const itemId = i.options.getString("id", true);
-      const it = getShopItem(i.guildId, itemId);
-      if (!it) return i.reply({ content: "Item not found.", ephemeral: true });
-      if (!spendCoins(i.guildId, i.user.id, it.price)) {
-        const bal = getBalance(i.guildId, i.user.id);
-        return i.reply({ content: `Not enough coins. You have ${bal}.`, ephemeral: true });
-      }
-  
-      if (it.type === "role") {
-        const roleId = it.payload;
-        const role = await i.guild.roles.fetch(roleId).catch(() => null);
-        const member = await i.guild.members.fetch(i.user.id);
-        if (!role) return i.reply({ content: "Role not found. Tell an admin to fix the shop item.", ephemeral: true });
-        await member.roles.add(role).catch(() => {});
-        return i.reply({ content: `✅ Purchased **${it.name}** — role granted.`, ephemeral: true });
-      } else {
-        return i.reply({ content: `✅ Purchased **${it.name}** — enjoy!`, ephemeral: true });
-      }
-    }
   });
   
   client.login(token);
